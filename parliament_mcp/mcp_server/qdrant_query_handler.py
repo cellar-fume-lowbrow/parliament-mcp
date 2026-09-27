@@ -3,11 +3,10 @@ from datetime import datetime
 from typing import Any, Literal
 
 from fastembed import SparseTextEmbedding
-from openai import AsyncAzureOpenAI
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.models import DatetimeRange, FieldCondition, Filter, MatchValue
 
-from parliament_mcp.openai_helpers import embed_single
+from parliament_mcp.openai_helpers import EmbeddingClient, embed_single
 from parliament_mcp.settings import ParliamentMCPSettings
 
 MINIMUM_DEBATE_HITS = 2
@@ -96,7 +95,7 @@ class DebateCollection:
 
 class QdrantQueryHandler:
     def __init__(
-        self, qdrant_client: AsyncQdrantClient, openai_client: AsyncAzureOpenAI, settings: ParliamentMCPSettings
+        self, qdrant_client: AsyncQdrantClient, openai_client: EmbeddingClient, settings: ParliamentMCPSettings
     ):
         self.qdrant_client = qdrant_client
         self.openai_client = openai_client
@@ -107,9 +106,10 @@ class QdrantQueryHandler:
         """Embed a query using the dense text embedding model."""
         return await embed_single(
             self.openai_client,
-            query,
-            self.settings.AZURE_OPENAI_EMBEDDING_MODEL,
+            self.settings.format_query_for_embedding(query),
+            self.settings.embedding_model,
             self.settings.EMBEDDING_DIMENSIONS,
+            send_dimensions=self.settings.EMBEDDING_SEND_DIMENSIONS,
         )
 
     def embed_query_sparse(self, query: str) -> models.SparseVector:

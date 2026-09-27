@@ -183,8 +183,9 @@ class QdrantDataLoader:
         embedded_chunks = await embed_batch(
             client=self.openai_client,
             texts=chunk_texts,
-            model=self.settings.AZURE_OPENAI_EMBEDDING_MODEL,
+            model=self.settings.embedding_model,
             dimensions=self.settings.EMBEDDING_DIMENSIONS,
+            send_dimensions=self.settings.EMBEDDING_SEND_DIMENSIONS,
         )
 
         sparse_embeddings = list(self.sparse_text_embedding.embed(chunk_texts))

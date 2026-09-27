@@ -76,6 +76,46 @@ class ParliamentMCPSettings(BaseSettings):
             "preview",
         )
 
+    # Embedding provider selection.
+    #   azure  -> uses the AZURE_OPENAI_* settings above (upstream default)
+    #   openai -> any OpenAI-compatible endpoint: OpenRouter, OpenAI, Ollama (/v1), LiteLLM
+    EMBEDDING_PROVIDER: str = "azure"
+    EMBEDDING_BASE_URL: str | None = None
+    EMBEDDING_APP_TITLE: str = "parliament-mcp"
+    # Only send `dimensions` for models that support truncation (text-embedding-3-*).
+    # Set false for fixed-size models such as bge-m3.
+    EMBEDDING_SEND_DIMENSIONS: bool = True
+
+    @property
+    def EMBEDDING_API_KEY(self) -> str:
+        return get_environment_or_ssm(
+            "EMBEDDING_API_KEY",
+            f"/{self._get_project_name()}/env_secrets/EMBEDDING_API_KEY",
+        )
+
+    # Template applied to search queries only (never to ingested documents), for
+    # instruction-aware / asymmetric models. Must contain {query}; a literal \n in
+    # the value is converted to a newline. Empty = embed queries as-is.
+    # qwen3-embedding: "Instruct: <task>\nQuery:{query}"
+    EMBEDDING_QUERY_TEMPLATE: str = ""
+
+    def format_query_for_embedding(self, query: str) -> str:
+        template = self.EMBEDDING_QUERY_TEMPLATE.replace("\\n", "\n")  # literal backslash-n -> newline
+        if not template:
+            return query
+        if "{query}" not in template:
+            msg = "EMBEDDING_QUERY_TEMPLATE must contain {query}"
+            raise ValueError(msg)
+        return template.replace("{query}", query)  # not str.format: user queries may contain braces
+
+    # Model slug for EMBEDDING_PROVIDER=openai, e.g. baai/bge-m3 (OpenRouter) or bge-m3 (Ollama)
+    EMBEDDING_MODEL: str | None = None
+
+    @property
+    def embedding_model(self) -> str:
+        """Model name for the active provider (falls back to the Azure deployment name)."""
+        return self.EMBEDDING_MODEL or self.AZURE_OPENAI_EMBEDDING_MODEL
+
     # Qdrant connection settings
     @property
     def QDRANT_URL(self) -> str | None:

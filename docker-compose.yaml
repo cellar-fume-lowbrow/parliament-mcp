@@ -20,11 +20,14 @@ services:
     ports:
       - "${MCP_PORT}:${MCP_PORT}"
     environment:
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
+      # The code reads QDRANT_URL; localhost from .env would point at this container, not Qdrant
+      - QDRANT_URL=http://qdrant:6333
     env_file:
       - path: .env
         required: true
+    extra_hosts:
+      # Lets the container reach Ollama on the host on Linux (automatic on Docker Desktop)
+      - "host.docker.internal:host-gateway"
     networks:
       - parliament-mcp-network
     depends_on:
