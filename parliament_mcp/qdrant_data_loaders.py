@@ -61,6 +61,28 @@ class RetryableHTTPStatusError(Exception):
         super().__init__(f"HTTP {response.status_code} for {response.request.url}")
 
 
+class ParliamentAPIErrorBodyError(Exception):
+    """Parliament's API sometimes returns HTTP 200 with {"Message": "An error has occurred."}.
+
+    Treated as transient: retried, bypassing the cache (these bodies would otherwise
+    be cached for up to 10 minutes and served back on every retry).
+    """
+
+    def __init__(self, response: httpx.Response):
+        self.response = response
+        super().__init__(f"HTTP 200 with error body {response.text[:100]!r} for {response.request.url}")
+
+
+def _is_error_body(response: httpx.Response) -> bool:
+    if response.status_code != httpx.codes.OK or "json" not in response.headers.get("content-type", ""):
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and set(body) == {"Message"}
+
+
 def _log_retry(retry_state: RetryCallState) -> None:
     exc = retry_state.outcome.exception() if retry_state.outcome else None
     logger.warning(
@@ -77,17 +99,23 @@ async def cached_limited_get(*args, **kwargs) -> httpx.Response:
     and retries transient failures with exponential backoff.
 
     After the final attempt, a retryable status is returned as-is so the caller's
-    raise_for_status() behaves exactly as before.
+    raise_for_status() behaves exactly as before. A persistent 200-with-error-body
+    raises ParliamentAPIErrorBodyError with the URL, rather than a confusing validation error.
     """
     try:
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type((RetryableHTTPStatusError, httpx.TransportError)),
+            retry=retry_if_exception_type(
+                (RetryableHTTPStatusError, ParliamentAPIErrorBodyError, httpx.TransportError)
+            ),
             stop=stop_after_attempt(settings.HTTP_MAX_ATTEMPTS),
             wait=wait_random_exponential(multiplier=2, max=60),
             before_sleep=_log_retry,
             reraise=True,
         ):
             with attempt:
+                if attempt.retry_state.attempt_number > 1:
+                    # Don't let a cached bad response be served back to a retry
+                    kwargs["headers"] = {**(kwargs.get("headers") or {}), "Cache-Control": "no-cache"}
                 return await _get_or_raise_retryable(*args, **kwargs)
     except RetryableHTTPStatusError as e:
         return e.response
@@ -99,6 +127,8 @@ async def _get_or_raise_retryable(*args, **kwargs) -> httpx.Response:
     response = await _cached_limited_get_once(*args, **kwargs)
     if response.status_code in RETRYABLE_STATUS_CODES:
         raise RetryableHTTPStatusError(response)
+    if _is_error_body(response):
+        raise ParliamentAPIErrorBodyError(response)
     return response
 
 

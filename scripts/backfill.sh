@@ -26,7 +26,7 @@ FROM="$1"
 TO="$2"
 SOURCES="${3:-hansard parliamentary-questions}"
 MAX_TRIES="${MAX_TRIES:-3}"
-RETRY_PAUSE="${RETRY_PAUSE:-60}"
+RETRY_PAUSE="${RETRY_PAUSE:-300}"  # Parliament API errors tend to be load-related; give it time
 LOAD_CMD="${LOAD_CMD:-docker compose exec -T mcp-server uv run parliament-mcp --log-level WARNING load-data}"
 
 for ym in "$FROM" "$TO"; do
