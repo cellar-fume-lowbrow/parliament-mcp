@@ -5,10 +5,12 @@
 #   scripts/backfill.sh 2025-10 2026-09            # both sources, newest month first
 #   scripts/backfill.sh 2025-10 2026-09 hansard    # one source only
 #
-# - Each month/source is loaded separately, so a failure costs one month, not the run.
-# - Completed months are recorded in .backfill/done/ and skipped on re-run,
-#   so re-running the same command resumes where it left off.
-# - Failed months are retried (MAX_TRIES), then skipped and listed at the end.
+# - Each month/source is loaded separately. Hansard is further split into ~weekly
+#   windows (HANSARD_WINDOW_DAYS) because deep pagination on busy months makes
+#   Hansard's search API time out. Questions load a whole month at a time.
+# - Completed windows and months are recorded in .backfill/done/ and skipped on
+#   re-run, so re-running the same command resumes where it left off.
+# - Failed windows are retried (MAX_TRIES), then skipped and listed at the end.
 # - Keeps the Mac awake while running (caffeinate).
 # - Per-month logs go to .backfill/logs/.
 #
@@ -27,6 +29,8 @@ TO="$2"
 SOURCES="${3:-hansard parliamentary-questions}"
 MAX_TRIES="${MAX_TRIES:-3}"
 RETRY_PAUSE="${RETRY_PAUSE:-300}"  # Parliament API errors tend to be load-related; give it time
+HANSARD_WINDOW_DAYS="${HANSARD_WINDOW_DAYS:-7}"  # 0 = whole month
+PQ_WINDOW_DAYS="${PQ_WINDOW_DAYS:-0}"
 LOAD_CMD="${LOAD_CMD:-docker compose exec -T mcp-server uv run parliament-mcp --log-level WARNING load-data}"
 
 for ym in "$FROM" "$TO"; do
@@ -66,37 +70,71 @@ done
 FAILED=""
 run_start=$(date +%s)
 
+window_days_for() {
+  case "$1" in
+    hansard) echo "$HANSARD_WINDOW_DAYS" ;;
+    *) echo "$PQ_WINDOW_DAYS" ;;
+  esac
+}
+
+# Load one window with retries. Returns 0 on success.
+load_window() { # source start end marker label log
+  local source="$1" start="$2" end="$3" marker="$4" label="$5" log="$6"
+  local try=1 t0 rc secs
+  while :; do
+    echo "[load] $source $label ($start to $end), attempt $try/$MAX_TRIES ..."
+    t0=$(date +%s)
+    $LOAD_CMD "$source" --from-date "$start" --to-date "$end" >>"$log" 2>&1
+    rc=$?
+    secs=$(($(date +%s) - t0))
+    if [ "$rc" -eq 0 ]; then
+      date '+%Y-%m-%d %H:%M:%S' >"$marker"
+      echo "[done] $source $label in $((secs / 60))m$((secs % 60))s"
+      return 0
+    fi
+    echo "[fail] $source $label (exit $rc after ${secs}s) - see $log"
+    if [ "$try" -ge "$MAX_TRIES" ]; then
+      FAILED="$FAILED $source:$label"
+      return 1
+    fi
+    try=$((try + 1))
+    sleep "$RETRY_PAUSE"
+  done
+}
+
 for ym in $MONTHS; do
   yy=${ym%-*}; mm=$((10#${ym#*-}))
-  start="$ym-01"
-  end="$ym-$(days_in_month "$yy" "$mm")"
+  last=$(days_in_month "$yy" "$mm")
   for source in $SOURCES; do
-    marker="$STATE_DIR/done/$source-$ym"
-    if [ -f "$marker" ]; then
+    month_marker="$STATE_DIR/done/$source-$ym"
+    if [ -f "$month_marker" ]; then
       echo "[skip] $source $ym (already done)"
       continue
     fi
     log="$STATE_DIR/logs/$source-$ym.log"
-    try=1
-    while :; do
-      echo "[load] $source $ym ($start to $end), attempt $try/$MAX_TRIES ..."
-      t0=$(date +%s)
-      $LOAD_CMD "$source" --from-date "$start" --to-date "$end" >>"$log" 2>&1
-      rc=$?
-      secs=$(($(date +%s) - t0))
-      if [ "$rc" -eq 0 ]; then
-        date '+%Y-%m-%d %H:%M:%S' >"$marker"
-        echo "[done] $source $ym in $((secs / 60))m$((secs % 60))s"
-        break
+    win=$(window_days_for "$source")
+    if [ "$win" -le 0 ]; then
+      load_window "$source" "$ym-01" "$ym-$last" "$month_marker" "$ym" "$log"
+      continue
+    fi
+    # Split the month into windows; mark the month done only when every window is.
+    month_ok=1
+    d=1
+    while [ "$d" -le "$last" ]; do
+      e=$((d + win - 1)); [ "$e" -gt "$last" ] && e=$last
+      start=$(printf '%s-%02d' "$ym" "$d"); end=$(printf '%s-%02d' "$ym" "$e")
+      wmarker="$STATE_DIR/done/$source-$start"
+      if [ -f "$wmarker" ]; then
+        echo "[skip] $source $start..$end (already done)"
+      else
+        load_window "$source" "$start" "$end" "$wmarker" "$start..$end" "$log" || month_ok=0
       fi
-      echo "[fail] $source $ym (exit $rc after ${secs}s) - see $log"
-      if [ "$try" -ge "$MAX_TRIES" ]; then
-        FAILED="$FAILED $source:$ym"
-        break
-      fi
-      try=$((try + 1))
-      sleep "$RETRY_PAUSE"
+      d=$((e + 1))
     done
+    if [ "$month_ok" -eq 1 ]; then
+      date '+%Y-%m-%d %H:%M:%S' >"$month_marker"
+      rm -f "$STATE_DIR/done/$source-$ym"-[0-3][0-9]  # window markers no longer needed
+    fi
   done
 done
 
@@ -104,7 +142,7 @@ total=$(($(date +%s) - run_start))
 echo
 echo "Finished in $((total / 3600))h$(((total % 3600) / 60))m."
 if [ -n "$FAILED" ]; then
-  echo "Months that still failed:$FAILED"
+  echo "Still failed:$FAILED"
   echo "Re-run the same command to retry just those."
   exit 1
 fi
