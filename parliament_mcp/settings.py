@@ -79,6 +79,7 @@ class ParliamentMCPSettings(BaseSettings):
     # Embedding provider selection.
     #   azure  -> uses the AZURE_OPENAI_* settings above (upstream default)
     #   openai -> any OpenAI-compatible endpoint: OpenRouter, OpenAI, Ollama (/v1), LiteLLM
+    #   voyage -> Voyage AI (EMBEDDING_BASE_URL optional, defaults to https://api.voyageai.com/v1)
     EMBEDDING_PROVIDER: str = "azure"
     EMBEDDING_BASE_URL: str | None = None
     EMBEDDING_APP_TITLE: str = "parliament-mcp"
@@ -115,6 +116,16 @@ class ParliamentMCPSettings(BaseSettings):
     def embedding_model(self) -> str:
         """Model name for the active provider (falls back to the Azure deployment name)."""
         return self.EMBEDDING_MODEL or self.AZURE_OPENAI_EMBEDDING_MODEL
+
+    # Model used to embed search queries. Defaults to EMBEDDING_MODEL.
+    # Only set a different model if it shares an embedding space with the indexing model
+    # (e.g. Voyage 4 family: index with voyage-4-large, query with voyage-4-lite).
+    # For any other provider, a different query model silently breaks search.
+    EMBEDDING_QUERY_MODEL: str | None = None
+
+    @property
+    def embedding_query_model(self) -> str:
+        return self.EMBEDDING_QUERY_MODEL or self.embedding_model
 
     # Qdrant connection settings
     @property

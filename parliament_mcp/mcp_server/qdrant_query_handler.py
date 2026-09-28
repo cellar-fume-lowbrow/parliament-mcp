@@ -107,9 +107,10 @@ class QdrantQueryHandler:
         return await embed_single(
             self.openai_client,
             self.settings.format_query_for_embedding(query),
-            self.settings.embedding_model,
+            self.settings.embedding_query_model,
             self.settings.EMBEDDING_DIMENSIONS,
             send_dimensions=self.settings.EMBEDDING_SEND_DIMENSIONS,
+            input_type="query",
         )
 
     def embed_query_sparse(self, query: str) -> models.SparseVector:

@@ -237,6 +237,7 @@ class QdrantDataLoader:
             model=self.settings.embedding_model,
             dimensions=self.settings.EMBEDDING_DIMENSIONS,
             send_dimensions=self.settings.EMBEDDING_SEND_DIMENSIONS,
+            input_type="document",
         )
 
         sparse_embeddings = list(self.sparse_text_embedding.embed(chunk_texts))
