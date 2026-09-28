@@ -29,6 +29,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception_type, stop_after_attempt, wait_random_exponential
 
 from parliament_mcp.models import (
     ContributionsResponse,
@@ -49,10 +50,60 @@ PQS_BASE_URL = "https://questions-statements-api.parliament.uk/api"
 _http_client_rate_limiter = AsyncLimiter(max_rate=settings.HTTP_MAX_RATE_PER_SECOND, time_period=1.0)
 
 
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+class RetryableHTTPStatusError(Exception):
+    """Raised internally so tenacity retries transient parliament.uk API failures."""
+
+    def __init__(self, response: httpx.Response):
+        self.response = response
+        super().__init__(f"HTTP {response.status_code} for {response.request.url}")
+
+
+def _log_retry(retry_state: RetryCallState) -> None:
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    logger.warning(
+        "Transient API failure (attempt %d/%d), retrying: %s",
+        retry_state.attempt_number,
+        settings.HTTP_MAX_ATTEMPTS,
+        exc,
+    )
+
+
 async def cached_limited_get(*args, **kwargs) -> httpx.Response:
     """
-    A wrapper around httpx.get that caches the result and limits the rate of requests.
+    A wrapper around httpx.get that caches the result, limits the rate of requests,
+    and retries transient failures with exponential backoff.
+
+    After the final attempt, a retryable status is returned as-is so the caller's
+    raise_for_status() behaves exactly as before.
     """
+    try:
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type((RetryableHTTPStatusError, httpx.TransportError)),
+            stop=stop_after_attempt(settings.HTTP_MAX_ATTEMPTS),
+            wait=wait_random_exponential(multiplier=2, max=60),
+            before_sleep=_log_retry,
+            reraise=True,
+        ):
+            with attempt:
+                return await _get_or_raise_retryable(*args, **kwargs)
+    except RetryableHTTPStatusError as e:
+        return e.response
+    msg = "unreachable"
+    raise AssertionError(msg)
+
+
+async def _get_or_raise_retryable(*args, **kwargs) -> httpx.Response:
+    response = await _cached_limited_get_once(*args, **kwargs)
+    if response.status_code in RETRYABLE_STATUS_CODES:
+        raise RetryableHTTPStatusError(response)
+    return response
+
+
+async def _cached_limited_get_once(*args, **kwargs) -> httpx.Response:
+    """A single cached, rate-limited GET (5xx responses are not cached by hishel)."""
     # Use /tmp for cache in Lambda environment
     if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
         # In Lambda, use tempfile to get the temp directory securely

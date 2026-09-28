@@ -162,6 +162,8 @@ class ParliamentMCPSettings(BaseSettings):
 
     # Rate limiting settings for parliament.uk API.
     HTTP_MAX_RATE_PER_SECOND: float = 10
+    # Retries for transient parliament.uk API failures (429, 5xx, timeouts, dropped connections)
+    HTTP_MAX_ATTEMPTS: int = 5
 
     # Load environment variables from .env file in local environment
     # from pydantic_settings import SettingsConfigDict
